@@ -1,0 +1,17 @@
+{
+  "name": "ai-code-review-bot",
+  "version": "1.0.0",
+  "description": "AI code review bot using Sourcegraph Cody API",
+  "main": "review.js",
+  "scripts": {
+    "start": "node review.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.0.0"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "author": "",
+  "license": "MIT"
+}
