@@ -40,6 +40,8 @@ async function reviewWithCody(filePath, diffContent, messages) {
     messages
   });
 
+  console.log('Sending payload to Cody API:', payload);
+
   return new Promise((resolve, reject) => {
     const req = https.request(CODY_API_URL, {
       method: 'POST',
@@ -49,19 +51,48 @@ async function reviewWithCody(filePath, diffContent, messages) {
       }
     }, res => {
       let fullResponse = '';
+
+      res.setEncoding('utf8');
       res.on('data', chunk => {
-        const lines = chunk.toString().split('\n');
+        // Cody SSE stream: split on newlines, capture "data: {json}"
+        const lines = chunk.split('\n');
         for (const line of lines) {
-          if (line.startsWith('{') && line.endsWith('}')) {
+          if (line.startsWith('data: ')) {
+            const dataStr = line.slice(6).trim();
+            if (!dataStr || dataStr === '[DONE]') continue;
             try {
-              const json = JSON.parse(line);
-              if (json.deltaText) fullResponse += json.deltaText;
-            } catch (e) {}
+              const parsed = JSON.parse(dataStr);
+              if (parsed.deltaText) {
+                fullResponse += parsed.deltaText;
+              }
+            } catch (err) {
+              console.warn('JSON parse error in stream:', err);
+            }
           }
         }
       });
+
       res.on('end', () => {
-        const parsedJson = tryParseJson(fullResponse);
+        console.log('Full AI response:', fullResponse);
+
+        // Attempt to parse as JSON directly
+        let parsedJson = tryParseJson(fullResponse);
+
+        // If not valid, try extracting JSON array manually
+        if (!parsedJson) {
+          try {
+            const jsonStart = fullResponse.indexOf('[');
+            const jsonEnd = fullResponse.lastIndexOf(']');
+            if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+              const jsonString = fullResponse.substring(jsonStart, jsonEnd + 1);
+              parsedJson = JSON.parse(jsonString);
+            }
+          } catch (e) {
+            console.error('Failed to extract JSON array from stream:', e);
+          }
+        }
+
+        // If still not JSON, fall back to markdown parsing
         if (parsedJson) {
           resolve({ issues: parsedJson });
         } else {

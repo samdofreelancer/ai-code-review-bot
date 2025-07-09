@@ -43,14 +43,13 @@ async function runReview(branchName, targetBranch) {
     fs.writeFileSync(diffPath, diff);
 
     console.log(`Reviewing ${file}...`);
-    const messages = buildReviewMessages(file, diff);
+    let messages = buildReviewMessages(file, diff);
     console.log(`Messages for ${file}:`, messages);
     if (!messages || messages.length === 0) {
       console.warn(`No messages generated for ${file}. Skipping review.`);
       continue;
     }
-    
-    console.log(`Sending review request for ${file}...`);
+
     const review = await reviewWithCody(file, diff, messages);
     if (!review) {
       console.warn(`No review response received for ${file}. Skipping.`);
