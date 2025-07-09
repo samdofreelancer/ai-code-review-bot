@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const https = require('https');
 
 const CODY_API_URL = 'https://sourcegraph.com/.api/completions/stream?api-version=9&client-name=web&client-version=0.0.1';
@@ -30,15 +32,50 @@ function extractIssuesFromMarkdown(markdown) {
   return issues.length > 0 ? issues : [{ lines: "N/A", currentIssue: "Raw response", suggestion: markdown }];
 }
 
+async function writePayloadByFilePath(filePath, payload) {
+  const outputDir = 'output';
+  const outputFile = path.join(outputDir, 'payload.json');
+
+  // Ensure output directory exists
+  await fs.promises.mkdir(outputDir, { recursive: true });
+
+  let data = {};
+  try {
+    // Try reading the file if it exists
+    const fileContent = await fs.promises.readFile(outputFile, 'utf8');
+    data = JSON.parse(fileContent);
+  } catch (err) {
+    // If file doesn't exist, start with empty object
+    if (err.code !== 'ENOENT') {
+      console.error('Error reading payload file:', err);
+      return;
+    }
+  }
+
+  // Update or add the payload for the given filePath
+  data[filePath] = JSON.parse(payload);
+
+  // Write back to the file
+  try {
+    await fs.promises.writeFile(outputFile, JSON.stringify(data, null, 2), 'utf8');
+    console.log('Payload successfully written/updated in output/payload.json');
+  } catch (err) {
+    console.error('Error writing payload to file:', err);
+  }
+}
+
 async function reviewWithCody(filePath, diffContent, messages) {
   const payload = JSON.stringify({
     temperature: 0.2,
     topK: -1,
     topP: -1,
-    model: "anthropic::2024-10-22::claude-sonnet-4-latest",
+    model: 'anthropic::2024-10-22::claude-sonnet-4-latest',
     maxTokensToSample: 4000,
     messages
   });
+
+  // Write payload to file asynchronously
+  await writePayloadByFilePath(filePath, payload);
 
   console.log('Sending payload to Cody API:', payload);
 
@@ -54,8 +91,9 @@ async function reviewWithCody(filePath, diffContent, messages) {
 
       res.setEncoding('utf8');
       res.on('data', chunk => {
-        // Cody SSE stream: split on newlines, capture "data: {json}"
+        console.log('received chunk', chunk);
         const lines = chunk.split('\n');
+        console.log('split chunk into lines', lines);
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const dataStr = line.slice(6).trim();
@@ -64,6 +102,12 @@ async function reviewWithCody(filePath, diffContent, messages) {
               const parsed = JSON.parse(dataStr);
               if (parsed.deltaText) {
                 fullResponse += parsed.deltaText;
+              } else if (parsed.choices?.length) {
+                parsed.choices.forEach(choice => {
+                  if (choice.message?.content) {
+                    fullResponse += choice.message.content;
+                  }
+                });
               }
             } catch (err) {
               console.warn('JSON parse error in stream:', err);
@@ -75,10 +119,8 @@ async function reviewWithCody(filePath, diffContent, messages) {
       res.on('end', () => {
         console.log('Full AI response:', fullResponse);
 
-        // Attempt to parse as JSON directly
         let parsedJson = tryParseJson(fullResponse);
 
-        // If not valid, try extracting JSON array manually
         if (!parsedJson) {
           try {
             const jsonStart = fullResponse.indexOf('[');
@@ -92,7 +134,6 @@ async function reviewWithCody(filePath, diffContent, messages) {
           }
         }
 
-        // If still not JSON, fall back to markdown parsing
         if (parsedJson) {
           resolve({ issues: parsedJson });
         } else {

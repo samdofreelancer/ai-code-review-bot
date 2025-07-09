@@ -7,7 +7,8 @@
     "start": "node review.js"
   },
   "dependencies": {
-    "dotenv": "^16.0.0"
+    "dotenv": "^16.0.0",
+    "p-limit": "^6.2.0"
   },
   "engines": {
     "node": ">=14"
