@@ -18,14 +18,17 @@ const REPO_DIR = 'money-keeper';
 async function runReview(branchName, targetBranch) {
   if (!fs.existsSync(REPO_DIR)) {
     console.log(`Cloning repository from ${REPO_URL}...`);
-    execGit(`git clone ${REPO_URL}`);
+    const { execSync } = require('child_process');
+    execSync(`git clone ${REPO_URL}`, { stdio: 'inherit' });
+    console.log('Fetching all remote branches...');
+    execSync(`git fetch --all`, { stdio: 'inherit' });
   }
 
   if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR);
   if (!fs.existsSync(DIFF_DIR)) fs.mkdirSync(DIFF_DIR);
 
-  console.log(`Checking out ${branchName}...`);
-  execGit(`cd ${REPO_DIR} && git checkout ${branchName}`);
+  console.log(`Checking out target branch ${targetBranch}...`);
+  execGit(`git checkout ${targetBranch}`);
 
   const changedFiles = getChangedFiles(targetBranch, branchName);
   console.log('Changed files:', changedFiles);

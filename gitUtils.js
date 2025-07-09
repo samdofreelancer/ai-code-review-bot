@@ -1,7 +1,9 @@
 const { execSync } = require('child_process');
 
+const REPO_DIR = 'money-keeper';
+
 function execGit(command) {
-  return execSync(command, { encoding: 'utf-8' }).trim();
+  return execSync(`cd ${REPO_DIR} && ${command}`, { encoding: 'utf-8' }).trim();
 }
 
 function getChangedFiles(targetBranch, featureBranch) {
