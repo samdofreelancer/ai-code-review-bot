@@ -7,12 +7,12 @@ const { reviewWithCody } = require('./aiReview');
 const { buildReviewMessages } = require('./promptBuilder');
 const { saveResults } = require('./aggregator');
 
-const OUTPUT_DIR = 'output';
+const OUTPUT_DIR = process.env.OUTPUT_DIR || 'output';
 const DIFF_DIR = path.join(OUTPUT_DIR, 'diffs');
 const RESULT_FILE = path.join(OUTPUT_DIR, 'review-result.json');
 
-const REPO_URL = 'https://github.com/samdofreelancer/money-keeper.git';
-const REPO_DIR = 'money-keeper';
+const REPO_URL = process.env.REPO_URL || 'https://github.com/samdofreelancer/money-keeper.git';
+const REPO_DIR = process.env.REPO_DIR || 'money-keeper';
 
 const MAX_CONCURRENCY = 3;
 const MAX_RETRIES = 3;

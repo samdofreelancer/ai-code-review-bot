@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 
-const CODY_API_URL = 'https://sourcegraph.com/.api/completions/stream?api-version=9&client-name=web&client-version=0.0.1';
+const CODY_API_URL = process.env.CODY_API_URL || 'https://sourcegraph.com/.api/completions/stream?api-version=9&client-name=web&client-version=0.0.1';
 const CODY_API_TOKEN = process.env.CODY_API_TOKEN || '';
 
 const CODY_HEADERS = {
