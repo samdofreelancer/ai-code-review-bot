@@ -1,3 +1,14 @@
+const fs = require('fs');
+const path = require('path');
+
+let rulesText = '';
+const rulesPath = path.join(__dirname, 'reviewRules.txt');
+try {
+  rulesText = fs.readFileSync(rulesPath, 'utf8');
+} catch (err) {
+  console.error('Error reading review rules:', err);
+}
+
 function buildReviewMessages(filePath, diffContent) {
   return [
     {
@@ -14,28 +25,7 @@ Review the following Java code diff and identify issues based on best practices 
   }
 ]
 
-### Rules for Review:
-Follow these principles from *Clean Code*:
-1. **Meaningful Names**  
-   - Use descriptive variable, method, and class names. Avoid abbreviations and vague terms.
-2. **Functions Should Be Small and Do One Thing**  
-   - Methods should be short, focused, and do only one task.
-3. **Avoid Too Many Parameters**  
-   - Prefer object encapsulation if a method has too many arguments.
-4. **Code Should Be Expressive**  
-   - Don't rely on comments to explain complex logic. Make the code self-explanatory.
-5. **Avoid Duplication**  
-   - Eliminate repeated code; use reusable methods or abstractions.
-6. **Error Handling Should Not Obscure Logic**  
-   - Try-catch blocks should not hide business logic.
-7. **Classes Should Have a Single Responsibility**  
-   - Each class should have one clear purpose.
-8. **Keep Side Effects Minimized**  
-   - Functions should not have unexpected side effects (e.g., modifying global state).
-9. **Avoid Magic Numbers and Strings**  
-   - Replace literals with named constants or enums.
-10. **Consistency and Formatting**  
-   - Use consistent indentation, blank lines, and access modifiers.
+${rulesText}
 
 ### Diff (\`${filePath}\`):
 \`\`\`diff:${filePath}
