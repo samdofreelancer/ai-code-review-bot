@@ -1,5 +1,4 @@
 require('dotenv').config();
-
 const fs = require('fs');
 const path = require('path');
 
@@ -17,15 +16,20 @@ const REPO_DIR = 'money-keeper';
 
 const MAX_CONCURRENCY = 3;
 const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 5000; // 5 seconds
+const RETRY_DELAY_MS = 3000; // 3 seconds
+const COOLDOWN_MS = 15000;   // cooldown after repeated failures
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 async function runReview(branchName, targetBranch) {
   const pLimit = await import('p-limit').then(mod => mod.default);
+
   if (!fs.existsSync(REPO_DIR)) {
     console.log(`Cloning repository from ${REPO_URL}...`);
     const { execSync } = require('child_process');
     execSync(`git clone ${REPO_URL}`, { stdio: 'inherit' });
-    console.log('Fetching all remote branches...');
     execSync(`git fetch --all`, { stdio: 'inherit' });
   }
 
@@ -41,48 +45,70 @@ async function runReview(branchName, targetBranch) {
   const results = [];
   const limit = pLimit(MAX_CONCURRENCY);
 
-  const reviewTasks = changedFiles.map(file => 
-    limit(async () => {
-      const diff = getFileDiff(targetBranch, branchName, file);
-      if (!diff) return;
+  const queue = [...changedFiles];
+  const failedQueue = [];
 
-      const diffPath = path.join(DIFF_DIR, file.replace(/[\\/]/g, '_') + '.diff');
-      fs.writeFileSync(diffPath, diff);
+  while (queue.length > 0) {
+    const currentBatch = queue.splice(0, MAX_CONCURRENCY);
 
-      const messages = buildReviewMessages(file, diff);
-      if (!messages || messages.length === 0) {
-        console.warn(`No messages generated for ${file}. Skipping review.`);
-        return;
-      }
+    await Promise.all(currentBatch.map(file =>
+      limit(async () => {
+        const diff = getFileDiff(targetBranch, branchName, file);
+        if (!diff) return;
 
-      let review;
-      for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-          review = await reviewWithCody(file, diff, messages);
-          if (review) break;
-        } catch (err) {
-          const isRateLimit = err.message?.includes('status code 429') || err.message?.includes('concurrency limit');
-          if (isRateLimit && attempt < MAX_RETRIES) {
-            console.warn(`Rate limit hit for ${file}, retrying in ${RETRY_DELAY_MS / 1000}s (Attempt ${attempt}/${MAX_RETRIES})...`);
-            await delay(RETRY_DELAY_MS);
-          } else {
-            console.error(`Failed to review ${file}:`, err.message || err);
-            return;
+        const diffPath = path.join(DIFF_DIR, file.replace(/[\\/]/g, '_') + '.diff');
+        fs.writeFileSync(diffPath, diff);
+
+        const messages = buildReviewMessages(file, diff);
+        if (!messages || messages.length === 0) {
+          console.warn(`No messages generated for ${file}. Skipping review.`);
+          return;
+        }
+
+        let review, attempt = 0;
+        let success = false;
+
+        while (attempt < MAX_RETRIES && !success) {
+          attempt++;
+          try {
+            review = await reviewWithCody(file, diff, messages);
+            success = true;
+            break;
+          } catch (err) {
+            const isRateLimit = err.message?.includes('status code 429') || err.message?.includes('concurrency limit');
+
+            console.error(`Error reviewing ${file} (Attempt ${attempt}/${MAX_RETRIES}):`, err.message || err);
+            if (isRateLimit) {
+              console.warn(`429 hit. Waiting ${RETRY_DELAY_MS / 1000}s before retry...`);
+              await delay(RETRY_DELAY_MS);
+            } else {
+              break;
+            }
           }
         }
-      }
 
-      if (!review || !review.issues) {
-        console.warn(`No review response or issues for ${file}.`);
-        return;
-      }
+        if (!success) {
+          console.warn(`❌ Failed after ${MAX_RETRIES} attempts for ${file}. Will retry later.`);
+          failedQueue.push(file);
+          return;
+        }
 
-      console.log(`✅ Review response for ${file}`);
-      results.push({ fileName: file, issues: review.issues });
-    })
-  );
+        if (!review || !review.issues) {
+          console.warn(`No review response or issues for ${file}.`);
+          return;
+        }
 
-  await Promise.all(reviewTasks);
+        console.log(`✅ Review response for ${file}`);
+        results.push({ fileName: file, issues: review.issues });
+      })
+    ));
+
+    if (queue.length === 0 && failedQueue.length > 0) {
+      console.log(`⏳ Cooling down for ${COOLDOWN_MS / 1000}s before retrying failed files...`);
+      await delay(COOLDOWN_MS);
+      queue.push(...failedQueue.splice(0));
+    }
+  }
 
   if (results.length === 0) {
     console.log('✅ No issues found in the review.');
@@ -100,3 +126,4 @@ if (!branchName || !targetBranch) {
 }
 
 runReview(branchName, targetBranch);
+

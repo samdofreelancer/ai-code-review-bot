@@ -74,9 +74,7 @@ async function reviewWithCody(filePath, diffContent, messages) {
     messages
   });
 
-  // Write payload to file asynchronously
   await writePayloadByFilePath(filePath, payload);
-
   console.log('Sending payload to Cody API:', payload);
 
   return new Promise((resolve, reject) => {
@@ -87,13 +85,17 @@ async function reviewWithCody(filePath, diffContent, messages) {
         'Content-Length': Buffer.byteLength(payload),
       }
     }, res => {
-      let fullResponse = '';
+      if (res.statusCode === 429) {
+        return reject(new Error('Rate limit hit: status code 429'));
+      } else if (res.statusCode < 200 || res.statusCode >= 300) {
+        return reject(new Error(`Unexpected status code: ${res.statusCode}`));
+      }
 
+      let fullResponse = '';
       res.setEncoding('utf8');
+
       res.on('data', chunk => {
-        console.log('received chunk', chunk);
         const lines = chunk.split('\n');
-        console.log('split chunk into lines', lines);
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const dataStr = line.slice(6).trim();
@@ -120,7 +122,6 @@ async function reviewWithCody(filePath, diffContent, messages) {
         console.log('Full AI response:', fullResponse);
 
         let parsedJson = tryParseJson(fullResponse);
-
         if (!parsedJson) {
           try {
             const jsonStart = fullResponse.indexOf('[');
@@ -148,6 +149,7 @@ async function reviewWithCody(filePath, diffContent, messages) {
     req.end();
   });
 }
+
 
 module.exports = {
   reviewWithCody,
