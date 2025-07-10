@@ -16,7 +16,7 @@ const REPO_DIR = 'money-keeper';
 
 const MAX_CONCURRENCY = 3;
 const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 3000; // 3 seconds
+const RETRY_DELAY_MS = 5000; // 5 seconds
 const COOLDOWN_MS = 15000;   // cooldown after repeated failures
 
 function delay(ms) {
@@ -79,8 +79,24 @@ async function runReview(branchName, targetBranch) {
 
             console.error(`Error reviewing ${file} (Attempt ${attempt}/${MAX_RETRIES}):`, err.message || err);
             if (isRateLimit) {
-              console.warn(`429 hit. Waiting ${RETRY_DELAY_MS / 1000}s before retry...`);
-              await delay(RETRY_DELAY_MS);
+              // Try to parse retry time from error message
+              const retryAfterMatch = err.message.match(/Retry after (.+? UTC)/);
+              let waitTimeMs = RETRY_DELAY_MS;
+              if (retryAfterMatch) {
+                try {
+                  const retryAfterStr = retryAfterMatch[1];
+                  const retryAfterDate = new Date(retryAfterStr);
+                  const now = new Date();
+                  const diffMs = retryAfterDate.getTime() - now.getTime();
+                  if (diffMs > 1000) { // wait at least 1 second
+                    waitTimeMs = diffMs;
+                  }
+                } catch (parseErr) {
+                  // fallback to default delay
+                }
+              }
+              console.warn(`429 hit. Waiting ${Math.ceil(waitTimeMs / 1000)}s before retry...`);
+              await delay(waitTimeMs);
             } else {
               break;
             }

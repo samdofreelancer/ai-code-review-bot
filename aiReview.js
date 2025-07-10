@@ -58,7 +58,6 @@ async function writePayloadByFilePath(filePath, payload) {
   // Write back to the file
   try {
     await fs.promises.writeFile(outputFile, JSON.stringify(data, null, 2), 'utf8');
-    console.log('Payload successfully written/updated in output/payload.json');
   } catch (err) {
     console.error('Error writing payload to file:', err);
   }
@@ -86,7 +85,27 @@ async function reviewWithCody(filePath, diffContent, messages) {
       }
     }, res => {
       if (res.statusCode === 429) {
-        return reject(new Error('Rate limit hit: status code 429'));
+        let errorBody = '';
+        res.setEncoding('utf8');
+        res.on('data', chunk => {
+          console.log('Received error data:', chunk);
+          errorBody += chunk;
+        });
+        res.on('end', () => {
+          // Try to extract retry info from errorBody
+          let retryMessage = '';
+          try {
+            console.log('Parsing error response:', errorBody);
+            const parsed = JSON.parse(errorBody);
+            console.log('Parsed error response:', parsed);
+            if (parsed.error) {
+              retryMessage = parsed.error;
+            }
+          } catch (e) {
+            retryMessage = errorBody;
+          }
+          reject(new Error(`Rate limit hit: status code 429. ${retryMessage}`));
+        });
       } else if (res.statusCode < 200 || res.statusCode >= 300) {
         return reject(new Error(`Unexpected status code: ${res.statusCode}`));
       }
