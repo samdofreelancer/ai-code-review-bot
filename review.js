@@ -1,151 +1,140 @@
 require('dotenv').config();
-const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
 
-// --- CONFIGURATION ---
-const OUTPUT_DIR = 'output';
+const { execGit, getChangedFiles, getFileDiff } = require('./gitUtils');
+const { reviewWithCody } = require('./aiReview');
+const { buildReviewMessages } = require('./promptBuilder');
+const { saveResults } = require('./aggregator');
+
+const OUTPUT_DIR = process.env.OUTPUT_DIR || 'output';
 const DIFF_DIR = path.join(OUTPUT_DIR, 'diffs');
 const RESULT_FILE = path.join(OUTPUT_DIR, 'review-result.json');
-const CODY_API_URL = 'https://sourcegraph.com/.api/completions/stream?api-version=9&client-name=web&client-version=0.0.1';
-const CODY_API_TOKEN = process.env.CODY_API_TOKEN || '';
 
-const CODY_HEADERS = {
-  'Authorization': `token ${CODY_API_TOKEN}`,
-  'Content-Type': 'application/json',
-};
+const REPO_URL = process.env.REPO_URL || 'https://github.com/samdofreelancer/money-keeper.git';
+const REPO_DIR = process.env.REPO_DIR || 'money-keeper';
 
-// --- UTILITY FUNCTIONS ---
-function execGit(command) {
-  return execSync(command, { encoding: 'utf-8' }).trim();
+const MAX_CONCURRENCY = 3;
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 5000; // 5 seconds
+const COOLDOWN_MS = 15000;   // cooldown after repeated failures
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function getChangedFiles(targetBranch, featureBranch) {
-  return execGit(`git diff --name-only ${targetBranch}...${featureBranch}`).split('\n');
-}
-
-function getFileDiff(targetBranch, featureBranch, file) {
-  return execGit(`git diff ${targetBranch}...${featureBranch} -- ${file}`);
-}
-
-function tryParseJson(text) {
-  try {
-    const json = JSON.parse(text);
-    if (Array.isArray(json)) return json;
-  } catch (e) {}
-  return null;
-}
-
-function extractIssuesFromMarkdown(markdown) {
-  const issues = [];
-  const issuePattern = /\*\*Line[s]?:?\s*(\d+-?\d*)\*\*\s*[:-]?\s*(.*?)\n+Suggestion:?\s*(.*?)\n+/gis;
-  let match;
-  while ((match = issuePattern.exec(markdown)) !== null) {
-    issues.push({
-      lines: match[1].trim(),
-      currentIssue: match[2].trim(),
-      suggestion: match[3].trim()
-    });
-  }
-  return issues.length > 0 ? issues : [{ lines: "N/A", currentIssue: "Raw response", suggestion: markdown }];
-}
-
-async function reviewWithCody(filePath, diffContent) {
-  const messages = [
-    {
-      text: "You are Cody, an AI coding assistant from Sourcegraph. If your answer contains fenced code blocks in Markdown, include the relevant full file path in the code block tag using this structure: ```$LANGUAGE:$FILEPATH```. Respond with a JSON array if possible, or with markdown listing issues and suggestions.",
-      speaker: "human"
-    },
-    {
-      text: "I am Cody, an AI coding assistant from Sourcegraph.",
-      speaker: "assistant"
-    },
-    {
-      text: `Please review the following code diff from file ${filePath}:\n\n${diffContent}`,
-      speaker: "human"
-    }
-  ];
-
-  const payload = JSON.stringify({
-    temperature: 0.2,
-    topK: -1,
-    topP: -1,
-    model: "anthropic::2024-10-22::claude-sonnet-4-latest",
-    maxTokensToSample: 4000,
-    messages
-  });
-
-  return new Promise((resolve, reject) => {
-    const req = https.request(CODY_API_URL, {
-      method: 'POST',i
-      headers: {
-        ...CODY_HEADERS,
-        'Content-Length': Buffer.byteLength(payload),
-      }
-    }, res => {
-      let fullResponse = '';
-      res.on('data', chunk => {
-        const lines = chunk.toString().split('\n');
-        for (const line of lines) {
-          if (line.startsWith('{') && line.endsWith('}')) {
-            try {
-              const json = JSON.parse(line);
-              if (json.deltaText) fullResponse += json.deltaText;
-            } catch (e) {}
-          }
-        }
-      });
-      res.on('end', () => {
-        const parsedJson = tryParseJson(fullResponse);
-        if (parsedJson) {
-          resolve({ issues: parsedJson });
-        } else {
-          const issues = extractIssuesFromMarkdown(fullResponse);
-          resolve({ issues });
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.write(payload);
-    req.end();
-  });
-}
-
-// --- MAIN WORKFLOW ---
 async function runReview(branchName, targetBranch) {
+  const pLimit = await import('p-limit').then(mod => mod.default);
+
+  if (!fs.existsSync(REPO_DIR)) {
+    console.log(`Cloning repository from ${REPO_URL}...`);
+    const { execSync } = require('child_process');
+    execSync(`git clone ${REPO_URL}`, { stdio: 'inherit' });
+    execSync(`git fetch --all`, { stdio: 'inherit' });
+  }
+
   if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR);
   if (!fs.existsSync(DIFF_DIR)) fs.mkdirSync(DIFF_DIR);
 
-  console.log(`Checking out ${branchName}...`);
-  execGit(`git checkout ${branchName}`);
+  console.log(`Checking out target branch ${targetBranch}...`);
+  execGit(`git checkout ${targetBranch}`);
 
   const changedFiles = getChangedFiles(targetBranch, branchName);
   console.log('Changed files:', changedFiles);
 
   const results = [];
+  const limit = pLimit(MAX_CONCURRENCY);
 
-  for (const file of changedFiles) {
-    const diff = getFileDiff(targetBranch, branchName, file);
-    if (!diff) continue;
+  const queue = [...changedFiles];
+  const failedQueue = [];
 
-    const diffPath = path.join(DIFF_DIR, file.replace(/[\\/]/g, '_') + '.diff');
-    fs.writeFileSync(diffPath, diff);
+  while (queue.length > 0) {
+    const currentBatch = queue.splice(0, MAX_CONCURRENCY);
 
-    console.log(`Reviewing ${file}...`);
-    const review = await reviewWithCody(file, diff);
+    await Promise.all(currentBatch.map(file =>
+      limit(async () => {
+        const diff = getFileDiff(targetBranch, branchName, file);
+        if (!diff) return;
 
-    if (review && review.issues) {
-      results.push({ fileName: file, issues: review.issues });
+        const diffPath = path.join(DIFF_DIR, file.replace(/[\\/]/g, '_') + '.diff');
+        fs.writeFileSync(diffPath, diff);
+
+        const messages = buildReviewMessages(file, diff);
+        if (!messages || messages.length === 0) {
+          console.warn(`No messages generated for ${file}. Skipping review.`);
+          return;
+        }
+
+        let review, attempt = 0;
+        let success = false;
+
+        while (attempt < MAX_RETRIES && !success) {
+          attempt++;
+          try {
+            review = await reviewWithCody(file, diff, messages);
+            success = true;
+            break;
+          } catch (err) {
+            const isRateLimit = err.message?.includes('status code 429') || err.message?.includes('concurrency limit');
+
+            console.error(`Error reviewing ${file} (Attempt ${attempt}/${MAX_RETRIES}):`, err.message || err);
+            if (isRateLimit) {
+              // Try to parse retry time from error message
+              const retryAfterMatch = err.message.match(/Retry after (.+? UTC)/);
+              let waitTimeMs = RETRY_DELAY_MS;
+              if (retryAfterMatch) {
+                try {
+                  const retryAfterStr = retryAfterMatch[1];
+                  const retryAfterDate = new Date(retryAfterStr);
+                  const now = new Date();
+                  const diffMs = retryAfterDate.getTime() - now.getTime();
+                  if (diffMs > 1000) { // wait at least 1 second
+                    waitTimeMs = diffMs;
+                  }
+                } catch (parseErr) {
+                  // fallback to default delay
+                }
+              }
+              console.warn(`429 hit. Waiting ${Math.ceil(waitTimeMs / 1000)}s before retry...`);
+              await delay(waitTimeMs);
+            } else {
+              break;
+            }
+          }
+        }
+
+        if (!success) {
+          console.warn(`❌ Failed after ${MAX_RETRIES} attempts for ${file}. Will retry later.`);
+          failedQueue.push(file);
+          return;
+        }
+
+        if (!review || !review.issues) {
+          console.warn(`No review response or issues for ${file}.`);
+          return;
+        }
+
+        console.log(`✅ Review response for ${file}`);
+        results.push({ fileName: file, issues: review.issues });
+      })
+    ));
+
+    if (queue.length === 0 && failedQueue.length > 0) {
+      console.log(`⏳ Cooling down for ${COOLDOWN_MS / 1000}s before retrying failed files...`);
+      await delay(COOLDOWN_MS);
+      queue.push(...failedQueue.splice(0));
     }
   }
 
-  fs.writeFileSync(RESULT_FILE, JSON.stringify(results, null, 2));
+  if (results.length === 0) {
+    console.log('✅ No issues found in the review.');
+    return;
+  }
+
+  saveResults(results);
   console.log(`\n✅ Review completed. Results saved to ${RESULT_FILE}`);
 }
 
-// --- ENTRY POINT ---
 const [,, branchName, targetBranch] = process.argv;
 if (!branchName || !targetBranch) {
   console.error('Usage: node review.js <branch_name> <target_branch>');
@@ -153,3 +142,4 @@ if (!branchName || !targetBranch) {
 }
 
 runReview(branchName, targetBranch);
+
